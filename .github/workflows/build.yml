@@ -16,17 +16,6 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Download PresentMon for FPS overlay
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force tools | Out-Null
-          $url = 'https://github.com/GameTechDev/PresentMon/releases/download/v2.5.1/PresentMon-2.5.1-x64.exe'
-          Invoke-WebRequest -Uri $url -OutFile 'tools\PresentMon.exe'
-          $expected = '9bec3083069f58f911e6a512f4806db51a27bd096103087bc1d05ef54c80a191'
-          $actual = (Get-FileHash 'tools\PresentMon.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) { throw "PresentMon SHA256 mismatch: $actual" }
-          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/GameTechDev/PresentMon/main/LICENSE.txt' -OutFile 'tools\PresentMon-LICENSE.txt'
-
       - name: Restore
         run: dotnet restore CPUCKTest.csproj
 
