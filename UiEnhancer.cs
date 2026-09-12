@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
@@ -52,6 +53,31 @@ internal static class UiEnhancer
             button.Click += (_, _) => ToggleOverlay(main);
             top.Controls.Add(button);
         }
+
+        // Explicitly close every LibreHardwareMonitor instance before the process exits.
+        // LHM extracts/loads a small kernel driver next to the EXE. If a Computer instance
+        // is left open, Windows can keep CPUCKTest.sys locked and antivirus/file shredders
+        // will report that the file is in use.
+        main.FormClosing += (_, _) =>
+        {
+            try { hideTimer.Stop(); hideTimer.Dispose(); } catch { }
+            try
+            {
+                if (overlay != null && !overlay.IsDisposed) overlay.Close();
+            }
+            catch { }
+
+            try
+            {
+                var field = typeof(MainForm).GetField("monitor", BindingFlags.Instance | BindingFlags.NonPublic);
+                if (field?.GetValue(main) is IDisposable disposable)
+                {
+                    disposable.Dispose();
+                    field.SetValue(main, null);
+                }
+            }
+            catch { }
+        };
     }
 
     static IEnumerable<Control> Descendants(Control root)
@@ -136,7 +162,12 @@ public sealed class OverlayForm : Form
         fps.Start();
         timer.Tick += (_, _) => RefreshOverlay();
         timer.Start();
-        FormClosed += (_, _) => { timer.Stop(); fps.Dispose(); monitor.Dispose(); };
+        FormClosed += (_, _) =>
+        {
+            try { timer.Stop(); timer.Dispose(); } catch { }
+            try { fps.Dispose(); } catch { }
+            try { monitor.Dispose(); } catch { }
+        };
         RefreshOverlay();
     }
 
@@ -231,8 +262,6 @@ internal sealed class FpsProvider : IDisposable
 
     void ParseCsvLine(string line)
     {
-        // PresentMon CSV commonly exposes CPU frame-time / ms-between-presents fields.
-        // Pick the first plausible millisecond frame interval from the row and smooth it.
         var parts = line.Split(',');
         foreach (var p in parts)
         {
