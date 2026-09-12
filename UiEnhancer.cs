@@ -3,8 +3,6 @@ using System.Globalization;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Text.RegularExpressions;
-using LibreHardwareMonitor.Hardware;
 
 namespace CPUCKTest;
 
@@ -26,7 +24,6 @@ internal static class UiEnhancer
         if (main == null) return;
         initialized = true;
 
-        // Hide unavailable RAM temperature instead of showing N/A.
         var hideTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         hideTimer.Tick += (_, _) =>
         {
@@ -38,7 +35,6 @@ internal static class UiEnhancer
         };
         hideTimer.Start();
 
-        // Make the information rows less cramped on smaller windows.
         foreach (var fp in Descendants(main).OfType<FlowLayoutPanel>())
         {
             fp.WrapContents = true;
@@ -54,19 +50,10 @@ internal static class UiEnhancer
             top.Controls.Add(button);
         }
 
-        // Explicitly close every LibreHardwareMonitor instance before the process exits.
-        // LHM extracts/loads a small kernel driver next to the EXE. If a Computer instance
-        // is left open, Windows can keep CPUCKTest.sys locked and antivirus/file shredders
-        // will report that the file is in use.
         main.FormClosing += (_, _) =>
         {
             try { hideTimer.Stop(); hideTimer.Dispose(); } catch { }
-            try
-            {
-                if (overlay != null && !overlay.IsDisposed) overlay.Close();
-            }
-            catch { }
-
+            try { if (overlay != null && !overlay.IsDisposed) overlay.Close(); } catch { }
             try
             {
                 var field = typeof(MainForm).GetField("monitor", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -89,16 +76,16 @@ internal static class UiEnhancer
         }
     }
 
-    static void ToggleOverlay(Form owner)
+    static void ToggleOverlay(MainForm main)
     {
         if (overlay == null || overlay.IsDisposed)
         {
-            overlay = new OverlayForm();
-            overlay.Show(owner);
+            overlay = new OverlayForm(main);
+            overlay.Show(main);
             return;
         }
         if (overlay.Visible) overlay.Hide();
-        else overlay.Show(owner);
+        else overlay.Show(main);
     }
 }
 
@@ -106,35 +93,52 @@ public sealed class OverlayForm : Form
 {
     readonly Label line1 = new();
     readonly Label line2 = new();
-    readonly System.Windows.Forms.Timer timer = new() { Interval = 500 };
-    readonly HardwareMonitor monitor = new();
+    readonly System.Windows.Forms.Timer timer = new() { Interval = 250 };
     readonly FpsProvider fps = new();
+
+    readonly Label? srcCpu;
+    readonly Label? srcGpu;
+    readonly Label? srcCpuPower;
+    readonly Label? srcGpuPower;
+    readonly Label? srcCpuLoad;
+    readonly Label? srcGpuLoad;
+    readonly Label? srcRam;
+
     Point dragStart;
     bool dragging;
 
-    public OverlayForm()
+    public OverlayForm(MainForm main)
     {
+        srcCpu = FieldLabel(main, "lblCpu");
+        srcGpu = FieldLabel(main, "lblGpu");
+        srcCpuPower = FieldLabel(main, "lblCpuPower");
+        srcGpuPower = FieldLabel(main, "lblGpuPower");
+        srcCpuLoad = FieldLabel(main, "lblCpuLoad");
+        srcGpuLoad = FieldLabel(main, "lblGpuLoad");
+        srcRam = FieldLabel(main, "lblRam");
+
         Text = "CPUCK Overlay";
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
-        Width = 520;
-        Height = 58;
+        Width = 500;
+        Height = 54;
         BackColor = Color.FromArgb(18, 18, 18);
         Opacity = 0.90;
         StartPosition = FormStartPosition.Manual;
+        DoubleBuffered = true;
         Location = new Point(Screen.PrimaryScreen?.WorkingArea.Right - Width - 20 ?? 20, 30);
 
         line1.Dock = DockStyle.Top;
-        line1.Height = 29;
+        line1.Height = 27;
         line1.TextAlign = ContentAlignment.MiddleLeft;
-        line1.Font = new Font("Segoe UI Semibold", 10.5f);
+        line1.Font = new Font("Segoe UI Semibold", 10f);
         line1.ForeColor = Color.White;
         line1.Padding = new Padding(10, 0, 6, 0);
 
         line2.Dock = DockStyle.Fill;
         line2.TextAlign = ContentAlignment.MiddleLeft;
-        line2.Font = new Font("Segoe UI", 9.5f);
+        line2.Font = new Font("Segoe UI", 9f);
         line2.ForeColor = Color.Gainsboro;
         line2.Padding = new Padding(10, 0, 6, 0);
 
@@ -158,7 +162,6 @@ public sealed class OverlayForm : Form
         line1.ContextMenuStrip = menu;
         line2.ContextMenuStrip = menu;
 
-        try { monitor.Open(); } catch { }
         fps.Start();
         timer.Tick += (_, _) => RefreshOverlay();
         timer.Start();
@@ -166,25 +169,32 @@ public sealed class OverlayForm : Form
         {
             try { timer.Stop(); timer.Dispose(); } catch { }
             try { fps.Dispose(); } catch { }
-            try { monitor.Dispose(); } catch { }
         };
         RefreshOverlay();
     }
 
+    static Label? FieldLabel(MainForm main, string name) =>
+        typeof(MainForm).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(main) as Label;
+
+    static string Value(string? text, string prefix, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return fallback;
+        var v = text.Trim();
+        return v.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? v[prefix.Length..].Trim() : v;
+    }
+
     void RefreshOverlay()
     {
-        HardwareSnapshot s = default;
-        try { s = monitor.Read(); } catch { }
-        var fpsValue = fps.CurrentFps;
-
-        string cpuTemp = s.CpuTemp.HasValue ? $"{s.CpuTemp:0}°" : "--°";
-        string gpuTemp = s.GpuTemp.HasValue ? $"{s.GpuTemp:0}°" : "--°";
-        string cpuLoad = s.CpuLoad.HasValue ? $"{s.CpuLoad:0}%" : "--%";
-        string gpuLoad = s.GpuLoad.HasValue ? $"{s.GpuLoad:0}%" : "--%";
-        string ram = s.RamLoad.HasValue ? $"{s.RamLoad:0}%" : "--%";
-        string cpuPower = s.CpuPower.HasValue ? $"{s.CpuPower:0}W" : "--W";
-        string gpuPower = s.GpuPower.HasValue ? $"{s.GpuPower:0}W" : "--W";
-        string fpsText = fpsValue.HasValue ? $"{fpsValue.Value:0} FPS" : "FPS --";
+        // Important: overlay reads the main form's cached labels. It does NOT poll hardware again.
+        // This avoids a second LibreHardwareMonitor sensor walk every 500 ms, which caused stutter.
+        string cpuTemp = Value(srcCpu?.Text, "CPU", "--°C");
+        string gpuTemp = Value(srcGpu?.Text, "GPU", "--°C");
+        string cpuLoad = Value(srcCpuLoad?.Text, "CPU Load", "-- %");
+        string gpuLoad = Value(srcGpuLoad?.Text, "GPU Load", "-- %");
+        string ram = Value(srcRam?.Text, "RAM", "-- %");
+        string cpuPower = Value(srcCpuPower?.Text, "CPU Power", "-- W");
+        string gpuPower = Value(srcGpuPower?.Text, "GPU Power", "-- W");
+        string fpsText = fps.CurrentFps is double f ? $"{f:0} FPS" : "FPS --";
 
         line1.Text = $"CPU {cpuTemp} {cpuLoad}  |  GPU {gpuTemp} {gpuLoad}  |  RAM {ram}  |  {fpsText}";
         line2.Text = $"CPU {cpuPower}  |  GPU {gpuPower}  |  drag to move · double-click to hide";
@@ -223,28 +233,43 @@ internal sealed class FpsProvider : IDisposable
 {
     readonly object gate = new();
     Process? process;
+    System.Threading.Timer? foregroundTimer;
+    string? extractedExe;
     double? fps;
-    public double? CurrentFps { get { lock (gate) return fps; } }
+    DateTime lastFrameUtc;
+    int foregroundPid;
+    int processIdColumn = -1;
+    int frameTimeColumn = -1;
+    bool headerSeen;
+
+    public double? CurrentFps
+    {
+        get
+        {
+            lock (gate)
+            {
+                if (!fps.HasValue || DateTime.UtcNow - lastFrameUtc > TimeSpan.FromSeconds(2)) return null;
+                return fps;
+            }
+        }
+    }
 
     public void Start()
     {
         try
         {
-            string dir = AppContext.BaseDirectory;
-            string? exe = new[]
-            {
-                Path.Combine(dir, "PresentMon.exe"),
-                Path.Combine(dir, "PresentMon-x64.exe")
-            }.FirstOrDefault(File.Exists);
+            extractedExe = ExtractEmbeddedPresentMon();
+            if (string.IsNullOrWhiteSpace(extractedExe) || !File.Exists(extractedExe)) return;
 
-            if (exe == null) return;
+            UpdateForegroundPid();
+            foregroundTimer = new System.Threading.Timer(_ => UpdateForegroundPid(), null, 250, 250);
 
             process = new Process
             {
                 StartInfo = new ProcessStartInfo
                 {
-                    FileName = exe,
-                    Arguments = "--output_stdout --no_console_stats",
+                    FileName = extractedExe,
+                    Arguments = "--output_stdout --no_console_stats --exclude_dropped --session_name CPUCKTestFPS --stop_existing_session",
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -252,33 +277,112 @@ internal sealed class FpsProvider : IDisposable
                 },
                 EnableRaisingEvents = true
             };
-            process.OutputDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) ParseCsvLine(e.Data); };
+            process.OutputDataReceived += (_, e) =>
+            {
+                if (!string.IsNullOrWhiteSpace(e.Data)) ParseCsvLine(e.Data);
+            };
             process.Exited += (_, _) => { lock (gate) fps = null; };
             process.Start();
             process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
         }
-        catch { lock (gate) fps = null; }
+        catch
+        {
+            lock (gate) fps = null;
+        }
+    }
+
+    void UpdateForegroundPid()
+    {
+        try
+        {
+            var hwnd = GetForegroundWindow();
+            if (hwnd == IntPtr.Zero) { Volatile.Write(ref foregroundPid, 0); return; }
+            GetWindowThreadProcessId(hwnd, out uint pid);
+            Volatile.Write(ref foregroundPid, unchecked((int)pid));
+        }
+        catch { Volatile.Write(ref foregroundPid, 0); }
     }
 
     void ParseCsvLine(string line)
     {
-        var parts = line.Split(',');
-        foreach (var p in parts)
+        var parts = SplitCsv(line);
+        if (parts.Count == 0) return;
+
+        if (!headerSeen || parts.Any(x => x.Equals("MsBetweenPresents", StringComparison.OrdinalIgnoreCase)))
         {
-            if (!double.TryParse(p.Trim('"'), NumberStyles.Float, CultureInfo.InvariantCulture, out var ms)) continue;
-            if (ms < 2.0 || ms > 200.0) continue;
-            double candidate = 1000.0 / ms;
-            if (candidate < 5 || candidate > 500) continue;
-            lock (gate)
-            {
-                fps = fps.HasValue ? fps.Value * 0.8 + candidate * 0.2 : candidate;
-            }
-            break;
+            processIdColumn = parts.FindIndex(x => x.Equals("ProcessID", StringComparison.OrdinalIgnoreCase));
+            frameTimeColumn = parts.FindIndex(x => x.Equals("MsBetweenPresents", StringComparison.OrdinalIgnoreCase));
+            headerSeen = processIdColumn >= 0 && frameTimeColumn >= 0;
+            return;
         }
+
+        if (!headerSeen || processIdColumn >= parts.Count || frameTimeColumn >= parts.Count) return;
+        if (!int.TryParse(parts[processIdColumn], NumberStyles.Integer, CultureInfo.InvariantCulture, out int pid)) return;
+        int target = Volatile.Read(ref foregroundPid);
+        if (target <= 0 || pid != target || pid == Environment.ProcessId) return;
+
+        if (!double.TryParse(parts[frameTimeColumn], NumberStyles.Float, CultureInfo.InvariantCulture, out double ms)) return;
+        if (ms <= 1.0 || ms > 1000.0) return;
+        double candidate = 1000.0 / ms;
+        if (candidate < 1 || candidate > 1000) return;
+
+        lock (gate)
+        {
+            fps = fps.HasValue ? fps.Value * 0.80 + candidate * 0.20 : candidate;
+            lastFrameUtc = DateTime.UtcNow;
+        }
+    }
+
+    static List<string> SplitCsv(string line)
+    {
+        var result = new List<string>();
+        var sb = new System.Text.StringBuilder();
+        bool quoted = false;
+        for (int i = 0; i < line.Length; i++)
+        {
+            char c = line[i];
+            if (c == '"')
+            {
+                if (quoted && i + 1 < line.Length && line[i + 1] == '"') { sb.Append('"'); i++; }
+                else quoted = !quoted;
+            }
+            else if (c == ',' && !quoted)
+            {
+                result.Add(sb.ToString().Trim());
+                sb.Clear();
+            }
+            else sb.Append(c);
+        }
+        result.Add(sb.ToString().Trim());
+        return result;
+    }
+
+    static string? ExtractEmbeddedPresentMon()
+    {
+        try
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            using var src = asm.GetManifestResourceStream("CPUCKTest.PresentMon.exe");
+            if (src == null) return null;
+
+            string dir = Path.Combine(Path.GetTempPath(), "CPUCKTest");
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, "PresentMon-2.5.1-x64.exe");
+
+            if (!File.Exists(path) || new FileInfo(path).Length != src.Length)
+            {
+                using var dst = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read);
+                src.CopyTo(dst);
+            }
+            return path;
+        }
+        catch { return null; }
     }
 
     public void Dispose()
     {
+        try { foregroundTimer?.Dispose(); } catch { }
         try
         {
             if (process != null && !process.HasExited) process.Kill(true);
@@ -286,4 +390,10 @@ internal sealed class FpsProvider : IDisposable
         }
         catch { }
     }
+
+    [DllImport("user32.dll")]
+    static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 }
