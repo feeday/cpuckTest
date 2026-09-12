@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Management;
+using System.Runtime.InteropServices;
 using ILGPU;
 using ILGPU.Runtime;
 using LibreHardwareMonitor.Hardware;
@@ -22,6 +23,8 @@ public sealed class MainForm : Form
 {
     readonly CheckBox chkCpu = new() { Text = "Stress CPU", Checked = true, AutoSize = true };
     readonly CheckBox chkGpu = new() { Text = "Stress GPU", Checked = true, AutoSize = true };
+    readonly CheckBox chkRam = new() { Text = "Stress RAM", Checked = false, AutoSize = true };
+    readonly CheckBox chkDisk = new() { Text = "Stress Disk R/W", Checked = false, AutoSize = true };
     readonly ComboBox cmbMinutes = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 85 };
     readonly NumericUpDown numCpuLimit = new() { Minimum = 80, Maximum = 105, Value = 100, Width = 65 };
     readonly NumericUpDown numGpuLimit = new() { Minimum = 70, Maximum = 100, Value = 90, Width = 65 };
@@ -42,9 +45,11 @@ public sealed class MainForm : Form
     readonly Label lblRam = MakeSmall("RAM -- %");
     readonly Label lblRamClock = MakeSmall("RAM Speed -- MT/s");
     readonly Label lblRamTemp = MakeSmall("RAM Temp --°C");
-    readonly Label lblDisk = MakeSmall("Disk --°C");
-    readonly Label lblDiskRead = MakeSmall("Read -- MB/s");
-    readonly Label lblDiskWrite = MakeSmall("Write -- MB/s");
+    readonly Label lblRamRead = MakeSmall("RAM R -- GB/s");
+    readonly Label lblRamWrite = MakeSmall("RAM W -- GB/s");
+    readonly Label lblDisk = MakeSmall("SSD --°C");
+    readonly Label lblDiskRead = MakeSmall("Disk R -- MB/s");
+    readonly Label lblDiskWrite = MakeSmall("Disk W -- MB/s");
     readonly Label lblDiskLoad = MakeSmall("Disk Load -- %");
     readonly Label lblElapsed = MakeSmall("Elapsed 00:00");
 
@@ -57,20 +62,23 @@ public sealed class MainForm : Form
     CancellationTokenSource? cts;
     Task? cpuTask;
     Task? gpuTask;
+    Task? ramTask;
+    Task? diskTask;
     readonly Stopwatch sw = new();
     int testSeconds = 120;
     double maxCpuTemp, maxGpuTemp, maxRamTemp, maxDiskTemp;
     double maxCpuPower, maxGpuPower, maxCpuClock, maxGpuClock;
+    double maxRamRead, maxRamWrite, maxDiskRead, maxDiskWrite;
     string? csvPath;
     StreamWriter? csv;
     bool stopping;
 
     public MainForm()
     {
-        Text = "CPUCK Test - CPU / GPU Stability & Hardware Monitor";
-        Width = 1320;
-        Height = 820;
-        MinimumSize = new Size(1080, 680);
+        Text = "CPUCK Test - CPU / GPU / RAM / Disk Stability & Hardware Monitor";
+        Width = 1500;
+        Height = 850;
+        MinimumSize = new Size(1180, 700);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(30, 30, 30);
         ForeColor = Color.White;
@@ -105,35 +113,41 @@ public sealed class MainForm : Form
     {
         Text = text,
         AutoSize = true,
-        Margin = new Padding(10, 8, 10, 8),
+        Margin = new Padding(9, 8, 9, 8),
         ForeColor = Color.Gainsboro
     };
 
     void BuildUi()
     {
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 6, ColumnCount = 1, Padding = new Padding(12) };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 68));
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 7, ColumnCount = 1, Padding = new Padding(12) };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 57));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 43));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 50));
 
-        var controls = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Padding = new Padding(0, 8, 0, 0) };
+        var controls = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Padding = new Padding(0, 6, 0, 0) };
         controls.Controls.Add(chkCpu);
         controls.Controls.Add(chkGpu);
-        controls.Controls.Add(new Label { Text = "Duration", AutoSize = true, Margin = new Padding(20, 5, 4, 0) });
+        controls.Controls.Add(chkRam);
+        controls.Controls.Add(chkDisk);
+        controls.Controls.Add(new Label { Text = "Duration", AutoSize = true, Margin = new Padding(18, 5, 4, 0) });
         controls.Controls.Add(cmbMinutes);
-        controls.Controls.Add(new Label { Text = "CPU stop ≥", AutoSize = true, Margin = new Padding(20, 5, 4, 0) });
-        controls.Controls.Add(numCpuLimit);
-        controls.Controls.Add(new Label { Text = "°C", AutoSize = true, Margin = new Padding(2, 5, 4, 0) });
-        controls.Controls.Add(new Label { Text = "GPU stop ≥", AutoSize = true, Margin = new Padding(14, 5, 4, 0) });
-        controls.Controls.Add(numGpuLimit);
-        controls.Controls.Add(new Label { Text = "°C", AutoSize = true, Margin = new Padding(2, 5, 4, 0) });
         controls.Controls.Add(btnStart);
         controls.Controls.Add(btnStop);
         controls.Controls.Add(btnExport);
         controls.Controls.Add(btnLogs);
+
+        var limits = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+        limits.Controls.Add(new Label { Text = "CPU stop ≥", AutoSize = true, Margin = new Padding(0, 5, 4, 0) });
+        limits.Controls.Add(numCpuLimit);
+        limits.Controls.Add(new Label { Text = "°C", AutoSize = true, Margin = new Padding(2, 5, 16, 0) });
+        limits.Controls.Add(new Label { Text = "GPU stop ≥", AutoSize = true, Margin = new Padding(0, 5, 4, 0) });
+        limits.Controls.Add(numGpuLimit);
+        limits.Controls.Add(new Label { Text = "°C", AutoSize = true, Margin = new Padding(2, 5, 18, 0) });
+        limits.Controls.Add(new Label { Text = "Disk stress writes max 8 GB/test; temporary file is deleted after stop", AutoSize = true, ForeColor = Color.Orange, Margin = new Padding(10, 5, 0, 0) });
 
         var metrics = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
         metrics.Controls.Add(lblCpu);
@@ -149,6 +163,8 @@ public sealed class MainForm : Form
         secondary.Controls.Add(lblRam);
         secondary.Controls.Add(lblRamClock);
         secondary.Controls.Add(lblRamTemp);
+        secondary.Controls.Add(lblRamRead);
+        secondary.Controls.Add(lblRamWrite);
         secondary.Controls.Add(lblDisk);
         secondary.Controls.Add(lblDiskRead);
         secondary.Controls.Add(lblDiskWrite);
@@ -167,11 +183,12 @@ public sealed class MainForm : Form
         statusPanel.Controls.Add(new Label { Text = "Safety auto-stop enabled", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.Orange }, 1, 0);
 
         root.Controls.Add(controls, 0, 0);
-        root.Controls.Add(metrics, 0, 1);
-        root.Controls.Add(secondary, 0, 2);
-        root.Controls.Add(graphGroup, 0, 3);
-        root.Controls.Add(logGroup, 0, 4);
-        root.Controls.Add(statusPanel, 0, 5);
+        root.Controls.Add(limits, 0, 1);
+        root.Controls.Add(metrics, 0, 2);
+        root.Controls.Add(secondary, 0, 3);
+        root.Controls.Add(graphGroup, 0, 4);
+        root.Controls.Add(logGroup, 0, 5);
+        root.Controls.Add(statusPanel, 0, 6);
         Controls.Add(root);
     }
 
@@ -186,13 +203,14 @@ public sealed class MainForm : Form
             AddLog($"CPU: {snap.CpuName ?? "Unknown"}");
             AddLog($"GPU: {snap.GpuName ?? "Unknown"}");
             AddLog($"RAM: {snap.RamName ?? "Generic Memory"} / {FormatRamSpeed(snap.RamSpeed)}");
+            if (!snap.RamTemp.HasValue) AddLog("RAM temperature: sensor not exposed by this laptop/firmware (N/A is normal).");
             AddLog($"Disk: {snap.DiskName ?? "Unknown"}");
             uiTimer.Start();
         }
         catch (Exception ex)
         {
             AddLog("Hardware monitor error: " + ex.Message);
-            MessageBox.Show("Hardware sensors could not be initialized. Stress test can still run, but some monitoring and safety protection may be unavailable.\n\n" + ex.Message,
+            MessageBox.Show("Hardware sensors could not be initialized. Stress tests can still run, but some monitoring and safety protection may be unavailable.\n\n" + ex.Message,
                 "CPUCK Test", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             uiTimer.Start();
         }
@@ -201,15 +219,26 @@ public sealed class MainForm : Form
     void StartTest()
     {
         if (cts != null) return;
-        if (!chkCpu.Checked && !chkGpu.Checked)
+        if (!chkCpu.Checked && !chkGpu.Checked && !chkRam.Checked && !chkDisk.Checked)
         {
-            MessageBox.Show("Select CPU and/or GPU first.");
+            MessageBox.Show("Select CPU, GPU, RAM and/or Disk first.");
             return;
+        }
+
+        if (chkDisk.Checked)
+        {
+            var answer = MessageBox.Show(
+                "Disk R/W stress writes a temporary test file to the Windows TEMP drive.\n\nWrites are capped at 8 GB per test to reduce SSD wear. Continue?",
+                "CPUCK Test - Disk Stress", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (answer != DialogResult.Yes) return;
         }
 
         testSeconds = cmbMinutes.SelectedIndex switch { 0 => 60, 1 => 120, 2 => 300, 3 => 600, 4 => 900, _ => 1800 };
         maxCpuTemp = maxGpuTemp = maxRamTemp = maxDiskTemp = 0;
         maxCpuPower = maxGpuPower = maxCpuClock = maxGpuClock = 0;
+        maxRamRead = maxRamWrite = maxDiskRead = maxDiskWrite = 0;
+        MemoryStress.ResetSpeeds();
+        DiskStress.ResetSpeeds();
         graph.Clear();
         logBox.Items.Clear();
         cts = new CancellationTokenSource();
@@ -217,28 +246,37 @@ public sealed class MainForm : Form
         stopping = false;
         btnStart.Enabled = false;
         btnStop.Enabled = true;
-        chkCpu.Enabled = chkGpu.Enabled = cmbMinutes.Enabled = false;
+        chkCpu.Enabled = chkGpu.Enabled = chkRam.Enabled = chkDisk.Enabled = cmbMinutes.Enabled = false;
         numCpuLimit.Enabled = numGpuLimit.Enabled = false;
 
         var dir = Path.Combine(AppContext.BaseDirectory, "Logs");
         Directory.CreateDirectory(dir);
         csvPath = Path.Combine(dir, $"CPUCK_{DateTime.Now:yyyyMMdd_HHmmss}.csv");
         csv = new StreamWriter(csvPath, false, new System.Text.UTF8Encoding(true));
-        csv.WriteLine("Time,ElapsedSec,CPUTempC,CPUClockMHz,CPULoadPct,CPUPowerW,GPUTempC,GPUClockMHz,GPUMemoryClockMHz,GPULoadPct,GPUPowerW,RAMLoadPct,RAMSpeedMTs,RAMTempC,DiskName,DiskTempC,DiskReadMBps,DiskWriteMBps,DiskLoadPct");
+        csv.WriteLine("Time,ElapsedSec,CPUTempC,CPUClockMHz,CPULoadPct,CPUPowerW,GPUTempC,GPUClockMHz,GPUMemoryClockMHz,GPULoadPct,GPUPowerW,RAMLoadPct,RAMSpeedMTs,RAMTempC,RAMReadGBps,RAMWriteGBps,DiskName,DiskTempC,DiskReadMBps,DiskWriteMBps,DiskLoadPct");
         csv.Flush();
 
-        AddLog($"Test started: CPU={chkCpu.Checked}, GPU={chkGpu.Checked}, Duration={testSeconds}s");
+        AddLog($"Test started: CPU={chkCpu.Checked}, GPU={chkGpu.Checked}, RAM={chkRam.Checked}, Disk={chkDisk.Checked}, Duration={testSeconds}s");
         AddLog($"Safety limits: CPU {numCpuLimit.Value}°C / GPU {numGpuLimit.Value}°C");
-        lblStatus.Text = "RUNNING - full load stress test";
+        lblStatus.Text = "RUNNING - stability stress test";
 
         if (chkCpu.Checked) cpuTask = CpuStress.RunAsync(cts.Token);
         if (chkGpu.Checked) gpuTask = GpuStress.RunAsync(cts.Token, AddLogThreadSafe);
+        if (chkRam.Checked) ramTask = MemoryStress.RunAsync(cts.Token, AddLogThreadSafe);
+        if (chkDisk.Checked) diskTask = DiskStress.RunAsync(cts.Token, AddLogThreadSafe);
     }
 
     void UpdateUi()
     {
         HardwareSnapshot s = default;
         try { if (monitor != null) s = monitor.Read(); } catch { }
+
+        double? ramRead = chkRam.Checked && cts != null ? MemoryStress.LastReadGBps : null;
+        double? ramWrite = chkRam.Checked && cts != null ? MemoryStress.LastWriteGBps : null;
+        double? diskReadStress = chkDisk.Checked && cts != null ? DiskStress.LastReadMBps : null;
+        double? diskWriteStress = chkDisk.Checked && cts != null ? DiskStress.LastWriteMBps : null;
+        double? displayDiskRead = diskReadStress is > 0 ? diskReadStress : s.DiskReadMBps;
+        double? displayDiskWrite = diskWriteStress is > 0 ? diskWriteStress : s.DiskWriteMBps;
 
         lblCpu.Text = $"CPU  {(s.CpuTemp.HasValue ? s.CpuTemp.Value.ToString("0") + "°C" : "--°C")}";
         lblGpu.Text = $"GPU  {(s.GpuTemp.HasValue ? s.GpuTemp.Value.ToString("0") + "°C" : "--°C")}";
@@ -251,10 +289,12 @@ public sealed class MainForm : Form
 
         lblRam.Text = $"RAM {(s.RamLoad?.ToString("0") ?? "--")} %";
         lblRamClock.Text = $"RAM Speed {FormatRamSpeed(s.RamSpeed)}";
-        lblRamTemp.Text = $"RAM Temp {(s.RamTemp?.ToString("0") ?? "--")}°C";
+        lblRamTemp.Text = s.RamTemp.HasValue ? $"RAM Temp {s.RamTemp.Value:0}°C" : "RAM Temp N/A";
+        lblRamRead.Text = $"RAM R {(ramRead is > 0 ? ramRead.Value.ToString("0.0") : "--")} GB/s";
+        lblRamWrite.Text = $"RAM W {(ramWrite is > 0 ? ramWrite.Value.ToString("0.0") : "--")} GB/s";
         lblDisk.Text = $"SSD {(s.DiskTemp?.ToString("0") ?? "--")}°C";
-        lblDiskRead.Text = $"Read {(s.DiskReadMBps?.ToString("0.0") ?? "--")} MB/s";
-        lblDiskWrite.Text = $"Write {(s.DiskWriteMBps?.ToString("0.0") ?? "--")} MB/s";
+        lblDiskRead.Text = $"Disk R {(displayDiskRead?.ToString("0.0") ?? "--")} MB/s";
+        lblDiskWrite.Text = $"Disk W {(displayDiskWrite?.ToString("0.0") ?? "--")} MB/s";
         lblDiskLoad.Text = $"Disk Load {(s.DiskLoad?.ToString("0") ?? "--")} %";
         lblElapsed.Text = $"Elapsed {sw.Elapsed:mm\\:ss}";
 
@@ -266,6 +306,10 @@ public sealed class MainForm : Form
         if (s.GpuPower is double gp) maxGpuPower = Math.Max(maxGpuPower, gp);
         if (s.CpuClock is double cc) maxCpuClock = Math.Max(maxCpuClock, cc);
         if (s.GpuClock is double gc) maxGpuClock = Math.Max(maxGpuClock, gc);
+        if (ramRead is double rr) maxRamRead = Math.Max(maxRamRead, rr);
+        if (ramWrite is double rw) maxRamWrite = Math.Max(maxRamWrite, rw);
+        if (displayDiskRead is double dr) maxDiskRead = Math.Max(maxDiskRead, dr);
+        if (displayDiskWrite is double dw) maxDiskWrite = Math.Max(maxDiskWrite, dw);
 
         graph.Add(s.CpuTemp, s.GpuTemp, s.RamTemp, s.DiskTemp);
 
@@ -276,8 +320,8 @@ public sealed class MainForm : Form
                 ((int)sw.Elapsed.TotalSeconds).ToString(CultureInfo.InvariantCulture),
                 F(s.CpuTemp), F(s.CpuClock), F(s.CpuLoad), F(s.CpuPower),
                 F(s.GpuTemp), F(s.GpuClock), F(s.GpuMemoryClock), F(s.GpuLoad), F(s.GpuPower),
-                F(s.RamLoad), F(s.RamSpeed), F(s.RamTemp), Csv(s.DiskName), F(s.DiskTemp),
-                F(s.DiskReadMBps), F(s.DiskWriteMBps), F(s.DiskLoad)));
+                F(s.RamLoad), F(s.RamSpeed), F(s.RamTemp), F(ramRead), F(ramWrite), Csv(s.DiskName), F(s.DiskTemp),
+                F(displayDiskRead), F(displayDiskWrite), F(s.DiskLoad)));
             csv.Flush();
 
             if (s.CpuTemp >= (double)numCpuLimit.Value)
@@ -288,6 +332,11 @@ public sealed class MainForm : Form
             if (s.GpuTemp >= (double)numGpuLimit.Value)
             {
                 StopTest($"AUTO STOP: GPU reached {s.GpuTemp:0.0}°C");
+                return;
+            }
+            if (chkDisk.Checked && s.DiskTemp >= 80)
+            {
+                StopTest($"AUTO STOP: SSD reached {s.DiskTemp:0.0}°C");
                 return;
             }
             if (sw.Elapsed.TotalSeconds >= testSeconds)
@@ -316,13 +365,15 @@ public sealed class MainForm : Form
         if (!closeOnly && local != null)
         {
             AddLog(reason);
-            AddLog($"Result: CPU max {maxCpuTemp:0.0}°C / {maxCpuPower:0.0}W / {maxCpuClock:0}MHz; GPU max {maxGpuTemp:0.0}°C / {maxGpuPower:0.0}W / {maxGpuClock:0}MHz");
-            AddLog($"Other: RAM max {(maxRamTemp > 0 ? maxRamTemp.ToString("0.0") + "°C" : "N/A")}; Disk max {(maxDiskTemp > 0 ? maxDiskTemp.ToString("0.0") + "°C" : "N/A")}");
+            AddLog($"CPU: max {maxCpuTemp:0.0}°C / {maxCpuPower:0.0}W / {maxCpuClock:0}MHz");
+            AddLog($"GPU: max {maxGpuTemp:0.0}°C / {maxGpuPower:0.0}W / {maxGpuClock:0}MHz");
+            AddLog($"RAM: temp {(maxRamTemp > 0 ? maxRamTemp.ToString("0.0") + "°C" : "N/A")}, read max {maxRamRead:0.0} GB/s, write max {maxRamWrite:0.0} GB/s");
+            AddLog($"Disk: temp {(maxDiskTemp > 0 ? maxDiskTemp.ToString("0.0") + "°C" : "N/A")}, read max {maxDiskRead:0.0} MB/s, write max {maxDiskWrite:0.0} MB/s");
             if (csvPath != null) AddLog($"CSV saved: {csvPath}");
-            lblStatus.Text = $"{reason} | CPU {maxCpuTemp:0.0}°C | GPU {maxGpuTemp:0.0}°C";
+            lblStatus.Text = $"{reason} | CPU {maxCpuTemp:0.0}°C | GPU {maxGpuTemp:0.0}°C | SSD {maxDiskTemp:0.0}°C";
             btnStart.Enabled = true;
             btnStop.Enabled = false;
-            chkCpu.Enabled = chkGpu.Enabled = cmbMinutes.Enabled = true;
+            chkCpu.Enabled = chkGpu.Enabled = chkRam.Enabled = chkDisk.Enabled = cmbMinutes.Enabled = true;
             numCpuLimit.Enabled = numGpuLimit.Enabled = true;
         }
 
@@ -405,7 +456,7 @@ internal static class GpuStress
             var devices = context.Devices.Where(d => d.AcceleratorType == AcceleratorType.Cuda).ToArray();
             if (devices.Length == 0)
             {
-                log("GPU stress unavailable: no CUDA GPU detected. CPU test continues.");
+                log("GPU stress unavailable: no CUDA GPU detected. Other tests continue.");
                 return;
             }
 
@@ -434,6 +485,181 @@ internal static class GpuStress
             x = XMath.Sin(x) * XMath.Cos(x + 0.1f) + XMath.Sqrt(XMath.Abs(x) + 1.0f);
         data[index] = x;
     }
+}
+
+internal static class MemoryStress
+{
+    static double lastReadGBps;
+    static double lastWriteGBps;
+    static long sink;
+
+    public static double LastReadGBps => Volatile.Read(ref lastReadGBps);
+    public static double LastWriteGBps => Volatile.Read(ref lastWriteGBps);
+    public static void ResetSpeeds()
+    {
+        Volatile.Write(ref lastReadGBps, 0);
+        Volatile.Write(ref lastWriteGBps, 0);
+    }
+
+    public static Task RunAsync(CancellationToken token, Action<string> log) => Task.Run(() =>
+    {
+        var chunks = new List<byte[]>();
+        try
+        {
+            var (total, free) = ReadSystemMemory();
+            long reserve = 2L * 1024 * 1024 * 1024;
+            long usable = Math.Max(512L * 1024 * 1024, free - reserve);
+            long target = Math.Min(16L * 1024 * 1024 * 1024, (long)(usable * 0.60));
+            if (total > 0) target = Math.Min(target, (long)(total * 0.60));
+            target = Math.Max(512L * 1024 * 1024, target);
+
+            const int chunkSize = 64 * 1024 * 1024;
+            int wanted = (int)Math.Max(8, target / chunkSize);
+            log($"RAM stress target: about {wanted * chunkSize / 1024.0 / 1024 / 1024:0.0} GB (keeps system headroom).");
+
+            for (int i = 0; i < wanted && !token.IsCancellationRequested; i++)
+            {
+                try { chunks.Add(new byte[chunkSize]); }
+                catch (OutOfMemoryException) { break; }
+            }
+            if (chunks.Count == 0)
+            {
+                log("RAM stress could not allocate test memory.");
+                return;
+            }
+
+            long bytes = (long)chunks.Count * chunkSize;
+            int workers = Math.Clamp(Environment.ProcessorCount / 4, 2, 6);
+            int round = 1;
+            while (!token.IsCancellationRequested)
+            {
+                var w = Stopwatch.StartNew();
+                Parallel.For(0, chunks.Count, new ParallelOptions { MaxDegreeOfParallelism = workers, CancellationToken = token }, i =>
+                {
+                    chunks[i].AsSpan().Fill((byte)(round + i));
+                });
+                w.Stop();
+                if (w.Elapsed.TotalSeconds > 0)
+                    Volatile.Write(ref lastWriteGBps, bytes / w.Elapsed.TotalSeconds / 1_000_000_000.0);
+
+                var r = Stopwatch.StartNew();
+                long roundSink = 0;
+                Parallel.For<long>(0, chunks.Count,
+                    new ParallelOptions { MaxDegreeOfParallelism = workers, CancellationToken = token },
+                    () => 0L,
+                    (i, _, local) =>
+                    {
+                        ulong x = 0;
+                        foreach (ulong v in MemoryMarshal.Cast<byte, ulong>(chunks[i].AsSpan())) x ^= v;
+                        return local ^ unchecked((long)x);
+                    },
+                    local => Interlocked.Add(ref roundSink, local));
+                r.Stop();
+                Interlocked.Exchange(ref sink, roundSink);
+                if (r.Elapsed.TotalSeconds > 0)
+                    Volatile.Write(ref lastReadGBps, bytes / r.Elapsed.TotalSeconds / 1_000_000_000.0);
+                round++;
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { log("RAM stress error: " + ex.Message); }
+        finally
+        {
+            chunks.Clear();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            log("RAM stress stopped and test memory released.");
+        }
+    }, token);
+
+    static (long total, long free) ReadSystemMemory()
+    {
+        try
+        {
+            using var searcher = new ManagementObjectSearcher("SELECT TotalVisibleMemorySize, FreePhysicalMemory FROM Win32_OperatingSystem");
+            foreach (ManagementObject o in searcher.Get())
+            {
+                long totalKb = Convert.ToInt64(o["TotalVisibleMemorySize"] ?? 0, CultureInfo.InvariantCulture);
+                long freeKb = Convert.ToInt64(o["FreePhysicalMemory"] ?? 0, CultureInfo.InvariantCulture);
+                return (totalKb * 1024, freeKb * 1024);
+            }
+        }
+        catch { }
+        long fallback = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes;
+        return (fallback, fallback / 2);
+    }
+}
+
+internal static class DiskStress
+{
+    static double lastReadMBps;
+    static double lastWriteMBps;
+    public static double LastReadMBps => Volatile.Read(ref lastReadMBps);
+    public static double LastWriteMBps => Volatile.Read(ref lastWriteMBps);
+    public static void ResetSpeeds()
+    {
+        Volatile.Write(ref lastReadMBps, 0);
+        Volatile.Write(ref lastWriteMBps, 0);
+    }
+
+    public static Task RunAsync(CancellationToken token, Action<string> log) => Task.Run(() =>
+    {
+        string file = Path.Combine(Path.GetTempPath(), "CPUCKTest_DiskStress.tmp");
+        const long fileSize = 1024L * 1024 * 1024;
+        const long maxWritten = 8L * 1024 * 1024 * 1024;
+        const int bufferSize = 16 * 1024 * 1024;
+        long totalWritten = 0;
+        var buffer = new byte[bufferSize];
+        Random.Shared.NextBytes(buffer);
+        log($"Disk stress target: {Path.GetPathRoot(file)} TEMP drive; 1 GB test file, max writes 8 GB/test.");
+
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                if (totalWritten < maxWritten)
+                {
+                    var w = Stopwatch.StartNew();
+                    long done = 0;
+                    using (var fs = new FileStream(file, FileMode.Create, FileAccess.Write, FileShare.Read, 1024 * 1024,
+                               FileOptions.SequentialScan | FileOptions.WriteThrough))
+                    {
+                        while (done < fileSize && !token.IsCancellationRequested)
+                        {
+                            int n = (int)Math.Min(buffer.Length, fileSize - done);
+                            fs.Write(buffer, 0, n);
+                            done += n;
+                        }
+                        fs.Flush(true);
+                    }
+                    w.Stop();
+                    totalWritten += done;
+                    if (w.Elapsed.TotalSeconds > 0)
+                        Volatile.Write(ref lastWriteMBps, done / w.Elapsed.TotalSeconds / 1024.0 / 1024.0);
+                }
+
+                if (token.IsCancellationRequested || !File.Exists(file)) break;
+
+                var r = Stopwatch.StartNew();
+                long read = 0;
+                using (var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1024 * 1024, FileOptions.SequentialScan))
+                {
+                    int n;
+                    while (!token.IsCancellationRequested && (n = fs.Read(buffer, 0, buffer.Length)) > 0) read += n;
+                }
+                r.Stop();
+                if (r.Elapsed.TotalSeconds > 0)
+                    Volatile.Write(ref lastReadMBps, read / r.Elapsed.TotalSeconds / 1024.0 / 1024.0);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { log("Disk stress error: " + ex.Message); }
+        finally
+        {
+            try { if (File.Exists(file)) File.Delete(file); } catch { }
+            log($"Disk stress stopped. Temporary file removed. Total test writes: {totalWritten / 1024.0 / 1024 / 1024:0.0} GB.");
+        }
+    }, token);
 }
 
 internal readonly record struct HardwareSnapshot(
@@ -512,8 +738,7 @@ internal sealed class HardwareMonitor : IVisitor, IDisposable
                         else if (cpuPower == null) cpuPower = v;
                     }
                     if (s.SensorType == SensorType.Load && n.Contains("Total", StringComparison.OrdinalIgnoreCase)) cpuLoad = v;
-                    if (s.SensorType == SensorType.Clock && !n.Contains("Bus", StringComparison.OrdinalIgnoreCase))
-                        cpuClock = Math.Max(cpuClock ?? 0, v);
+                    if (s.SensorType == SensorType.Clock && !n.Contains("Bus", StringComparison.OrdinalIgnoreCase)) cpuClock = Math.Max(cpuClock ?? 0, v);
                 }
 
                 if (isDiscreteGpu)
@@ -535,6 +760,9 @@ internal sealed class HardwareMonitor : IVisitor, IDisposable
                     if (s.SensorType == SensorType.Clock && cachedRamSpeed == null) cachedRamSpeed = v * 2.0;
                 }
 
+                if (!isGpu && !isStorage && s.SensorType == SensorType.Temperature && LooksLikeRamTemperature(hw.Name, n))
+                    ramTemp = Math.Max(ramTemp ?? double.MinValue, v);
+
                 if (isStorage)
                 {
                     if (s.SensorType == SensorType.Temperature && diskTemp == null) diskTemp = v;
@@ -555,6 +783,13 @@ internal sealed class HardwareMonitor : IVisitor, IDisposable
             cpuLoad, gpuLoad, ramLoad, diskLoad,
             cpuClock, gpuClock, gpuMemoryClock, cachedRamSpeed,
             diskRead, diskWrite);
+    }
+
+    static bool LooksLikeRamTemperature(string hardwareName, string sensorName)
+    {
+        string x = hardwareName + " " + sensorName;
+        string[] keys = { "DIMM", "DRAM", "DDR", "RAM", "Memory", "TSOD", "SPD Hub" };
+        return keys.Any(k => x.Contains(k, StringComparison.OrdinalIgnoreCase));
     }
 
     static double? ReadRamSpeedWmi()
