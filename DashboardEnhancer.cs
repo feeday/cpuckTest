@@ -30,16 +30,52 @@ internal static class DashboardEnhancer
         var oldGraph = GetField<TempGraph>(main, "graph");
         if (uiTimer == null || oldGraph?.Parent is not GroupBox graphGroup ||
             !graphGroup.Text.Contains("TEMPERATURE", StringComparison.OrdinalIgnoreCase))
-            return; // Wait until UiEnhancer has rebuilt the window.
+            return;
 
         attached = true;
         Application.Idle -= TryAttach;
 
+        // Replace the old GroupBox entirely. This removes the leftover rectangular frame
+        // instead of merely hiding the dashed warning line inside the chart.
         modernGraph = new ModernTempGraph { Dock = DockStyle.Fill, Margin = Padding.Empty };
-        graphGroup.Controls.Remove(oldGraph);
-        oldGraph.Visible = false;
-        graphGroup.Controls.Add(modernGraph);
+        var graphHost = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Margin = graphGroup.Margin,
+            Padding = new Padding(0),
+            BackColor = Color.FromArgb(13, 15, 18),
+            BorderStyle = BorderStyle.None
+        };
+        var graphTitle = new Label
+        {
+            Text = "TEMPERATURE HISTORY",
+            Dock = DockStyle.Top,
+            Height = 22,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Padding = new Padding(4, 0, 0, 0),
+            ForeColor = Color.FromArgb(180, 188, 200),
+            BackColor = Color.FromArgb(13, 15, 18),
+            Font = new Font("Segoe UI Semibold", 8.5f)
+        };
+        graphHost.Controls.Add(modernGraph);
+        graphHost.Controls.Add(graphTitle);
         modernGraph.BringToFront();
+
+        if (graphGroup.Parent is TableLayoutPanel table)
+        {
+            var pos = table.GetPositionFromControl(graphGroup);
+            table.Controls.Remove(graphGroup);
+            graphGroup.Visible = false;
+            table.Controls.Add(graphHost, pos.Column, pos.Row);
+        }
+        else if (graphGroup.Parent is Control parent)
+        {
+            int index = parent.Controls.GetChildIndex(graphGroup);
+            parent.Controls.Remove(graphGroup);
+            graphGroup.Visible = false;
+            parent.Controls.Add(graphHost);
+            parent.Controls.SetChildIndex(graphHost, index);
+        }
 
         uiTimer.Tick += (_, _) =>
         {
@@ -80,14 +116,14 @@ internal sealed class ModernTempGraph : Panel
     readonly ConcurrentQueue<Sample> samples = new();
 
     readonly record struct Sample(double? Cpu, double? Gpu, double? Ram, double? Ssd);
-    readonly record struct Track(string Name, Color Color, Func<Sample, double?> Pick, double? Warn);
+    readonly record struct Track(string Name, Color Color, Func<Sample, double?> Pick);
 
     static readonly Track[] Tracks =
     {
-        new("CPU", Color.FromArgb(80, 230, 110), s => s.Cpu, 95),
-        new("GPU", Color.FromArgb(70, 185, 255), s => s.Gpu, 88),
-        new("RAM", Color.FromArgb(255, 195, 70), s => s.Ram, null),
-        new("SSD", Color.FromArgb(190, 120, 255), s => s.Ssd, 75)
+        new("CPU", Color.FromArgb(80, 230, 110), s => s.Cpu),
+        new("GPU", Color.FromArgb(70, 185, 255), s => s.Gpu),
+        new("RAM", Color.FromArgb(255, 195, 70), s => s.Ram),
+        new("SSD", Color.FromArgb(190, 120, 255), s => s.Ssd)
     };
 
     public ModernTempGraph()
@@ -114,8 +150,8 @@ internal sealed class ModernTempGraph : Panel
         var data = samples.ToArray();
         using var font = new Font("Segoe UI", 8.5f);
         using var small = new Font("Segoe UI", 7.5f);
-        using var gridPen = new Pen(Color.FromArgb(28, 255, 255, 255), 1f);
-        using var dividerPen = new Pen(Color.FromArgb(42, 255, 255, 255), 1f);
+        using var gridPen = new Pen(Color.FromArgb(22, 255, 255, 255), 1f);
+        using var dividerPen = new Pen(Color.FromArgb(34, 255, 255, 255), 1f);
 
         if (data.Length == 0)
         {
@@ -129,8 +165,8 @@ internal sealed class ModernTempGraph : Panel
 
         int left = 112;
         int right = 18;
-        int top = 5;
-        int bottom = 5;
+        int top = 3;
+        int bottom = 4;
         int usableH = Math.Max(1, Height - top - bottom);
         float bandH = usableH / (float)visibleTracks.Length;
         int plotW = Math.Max(1, Width - left - right);
@@ -146,10 +182,10 @@ internal sealed class ModernTempGraph : Panel
             double actualMin = values.Min();
             double actualMax = values.Max();
             double center = (actualMin + actualMax) / 2.0;
-            double range = Math.Max(8.0, actualMax - actualMin + 6.0);
+            double range = Math.Max(6.0, actualMax - actualMin + 4.0);
             double min = Math.Max(0, Math.Floor((center - range / 2.0) / 2.0) * 2.0);
             double max = Math.Min(110, Math.Ceiling((center + range / 2.0) / 2.0) * 2.0);
-            if (max - min < 8) max = Math.Min(110, min + 8);
+            if (max - min < 6) max = Math.Min(110, min + 6);
 
             if (ti > 0) g.DrawLine(dividerPen, 0, y0, Width, y0);
 
@@ -168,20 +204,15 @@ internal sealed class ModernTempGraph : Panel
             using var colorBrush = new SolidBrush(track.Color);
             using var mutedBrush = new SolidBrush(Color.FromArgb(145, 155, 168));
             using var pen = new Pen(track.Color, 2f) { LineJoin = LineJoin.Round };
+            using var valueFont = new Font("Segoe UI Semibold", 11f);
 
             g.DrawString(track.Name, font, colorBrush, 10, y0 + 7);
-            g.DrawString($"{latest:0}°C", new Font("Segoe UI Semibold", 11f), colorBrush, 48, y0 + 3);
+            g.DrawString($"{latest:0}°C", valueFont, colorBrush, 48, y0 + 3);
             g.DrawString($"{actualMin:0}–{actualMax:0}°", small, mutedBrush, 48, y0 + 25);
             g.DrawString($"{min:0}°", small, mutedBrush, left - 31, y1 - 17);
             g.DrawString($"{max:0}°", small, mutedBrush, left - 31, y0 + 2);
 
-            if (track.Warn is double warn && warn >= min && warn <= max)
-            {
-                float wy = MapY(warn, min, max, y0 + 5, y1 - 5);
-                using var warnPen = new Pen(Color.FromArgb(120, 255, 90, 80), 1f) { DashStyle = DashStyle.Dash };
-                g.DrawLine(warnPen, left, wy, Width - right, wy);
-            }
-
+            // No warning/dashed line. The graph is now purely a temperature trend view.
             PointF? prev = null;
             PointF lastPoint = default;
             int count = data.Length;
@@ -217,32 +248,43 @@ internal sealed class ModernTempGraph : Panel
 
 internal sealed class TaskbarStatsForm : Form
 {
+    const string RegistryPath = @"Software\CPUCKTest";
+
     readonly MainForm main;
     readonly Label text = new();
     readonly System.Windows.Forms.Timer timer = new() { Interval = 1000 };
-    IntPtr lastTaskbar;
+    IntPtr parentTaskbar;
+    StatsSize statsSize;
+
+    enum StatsSize
+    {
+        Compact,
+        Normal,
+        Large
+    }
 
     public TaskbarStatsForm(MainForm main)
     {
         this.main = main;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
-        TopMost = true;
-        Width = 620;
-        Height = 28;
+        TopMost = false;
         StartPosition = FormStartPosition.Manual;
 
         bool light = IsLightTaskbar();
         BackColor = light ? Color.FromArgb(242, 242, 242) : Color.FromArgb(32, 32, 32);
         ForeColor = light ? Color.FromArgb(25, 25, 25) : Color.White;
-        Opacity = 0.97;
 
         text.Dock = DockStyle.Fill;
         text.TextAlign = ContentAlignment.MiddleCenter;
-        text.Font = new Font("Segoe UI Semibold", 9f);
         text.ForeColor = ForeColor;
         text.BackColor = BackColor;
+        text.Cursor = Cursors.Hand;
         Controls.Add(text);
+
+        statsSize = LoadSize();
+        ApplySize(statsSize, false);
+        BuildSizeMenu();
 
         timer.Tick += (_, _) =>
         {
@@ -252,6 +294,69 @@ internal sealed class TaskbarStatsForm : Form
         timer.Start();
         Shown += (_, _) => { UpdateStats(); PositionOnTaskbar(); };
         FormClosed += (_, _) => timer.Dispose();
+    }
+
+    void BuildSizeMenu()
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add(MakeSizeItem("Small", StatsSize.Compact));
+        menu.Items.Add(MakeSizeItem("Medium", StatsSize.Normal));
+        menu.Items.Add(MakeSizeItem("Large", StatsSize.Large));
+        text.ContextMenuStrip = menu;
+        ContextMenuStrip = menu;
+    }
+
+    ToolStripMenuItem MakeSizeItem(string title, StatsSize value)
+    {
+        var item = new ToolStripMenuItem(title) { Checked = statsSize == value };
+        item.Click += (_, _) =>
+        {
+            statsSize = value;
+            ApplySize(value, true);
+            if (ContextMenuStrip != null)
+            {
+                foreach (ToolStripItem raw in ContextMenuStrip.Items)
+                    if (raw is ToolStripMenuItem mi) mi.Checked = mi.Text == title;
+            }
+            PositionOnTaskbar();
+        };
+        return item;
+    }
+
+    void ApplySize(StatsSize size, bool persist)
+    {
+        (int width, int height, float font) = size switch
+        {
+            StatsSize.Compact => (450, 24, 8.0f),
+            StatsSize.Large => (800, 34, 10.5f),
+            _ => (620, 28, 9.0f)
+        };
+        Width = width;
+        Height = height;
+        text.Font?.Dispose();
+        text.Font = new Font("Segoe UI Semibold", font);
+
+        if (persist)
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.CreateSubKey(RegistryPath);
+                key?.SetValue("TaskbarStatsSize", size.ToString(), RegistryValueKind.String);
+            }
+            catch { }
+        }
+    }
+
+    static StatsSize LoadSize()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RegistryPath);
+            string? value = key?.GetValue("TaskbarStatsSize")?.ToString();
+            if (Enum.TryParse(value, true, out StatsSize parsed)) return parsed;
+        }
+        catch { }
+        return StatsSize.Normal;
     }
 
     void UpdateStats()
@@ -273,7 +378,9 @@ internal sealed class TaskbarStatsForm : Form
         string gpu = $"GPU {FmtTemp(gpuTemp)} {FmtClock(gpuClock)} {FmtPct(gpuLoad)}";
         string ram = ramTemp.HasValue ? $"RAM {FmtPct(ramLoad)} {FmtTemp(ramTemp)}" : $"RAM {FmtPct(ramLoad)}";
         string ssd = $"SSD {FmtTemp(ssdTemp)}";
-        text.Text = $"{cpu}   |   {gpu}   |   {ram}   |   {ssd}";
+        text.Text = statsSize == StatsSize.Compact
+            ? $"{cpu} | {gpu} | {ram} | {ssd}"
+            : $"{cpu}   |   {gpu}   |   {ram}   |   {ssd}";
     }
 
     void PositionOnTaskbar()
@@ -289,43 +396,50 @@ internal sealed class TaskbarStatsForm : Form
         int tbHeight = tb.Bottom - tb.Top;
         if (tbWidth < 400 || tbHeight > 120)
         {
-            // Vertical taskbars are uncommon; do not cover them.
             Hide();
             return;
         }
 
-        IntPtr tray = FindWindowEx(taskbar, IntPtr.Zero, "TrayNotifyWnd", null);
-        int rightEdge = tb.Right - 260;
-        if (tray != IntPtr.Zero && GetWindowRect(tray, out RECT tr)) rightEdge = tr.Left - 8;
+        if (parentTaskbar != taskbar)
+        {
+            // Make this a real child of the Windows taskbar instead of a floating TopMost
+            // window. It now stays physically attached to the taskbar and follows it.
+            SetParent(Handle, taskbar);
+            parentTaskbar = taskbar;
+        }
 
-        int x = Math.Max(tb.Left + 8, rightEdge - Width);
-        int y = tb.Top + Math.Max(0, (tbHeight - Height) / 2);
-        SetBounds(x, y, Width, Math.Min(Height, Math.Max(22, tbHeight - 2)));
+        IntPtr tray = FindWindowEx(taskbar, IntPtr.Zero, "TrayNotifyWnd", null);
+        int rightEdgeScreen = tb.Right - 250;
+        if (tray != IntPtr.Zero && GetWindowRect(tray, out RECT tr)) rightEdgeScreen = tr.Left - 6;
+
+        int rightEdge = rightEdgeScreen - tb.Left;
+        int available = Math.Max(260, rightEdge - 8);
+        int width = Math.Min(Width, available);
+        int height = Math.Min(Height, Math.Max(22, tbHeight - 2));
+        int x = Math.Max(4, rightEdge - width);
+        int y = Math.Max(0, (tbHeight - height) / 2);
+        SetBounds(x, y, width, height);
 
         if (!Visible) Show();
-        if (lastTaskbar != taskbar)
-        {
-            lastTaskbar = taskbar;
-            TopMost = true;
-        }
     }
 
-    static double? ReadNumber(string? text, string after)
+    static double? ReadNumber(string? valueText, string after)
     {
-        if (string.IsNullOrWhiteSpace(text) || text.Contains("--")) return null;
-        var m = Regex.Match(text, Regex.Escape(after) + @"\s+([0-9]+(?:\.[0-9]+)?)", RegexOptions.IgnoreCase);
+        if (string.IsNullOrWhiteSpace(valueText) || valueText.Contains("--")) return null;
+        var m = Regex.Match(valueText, Regex.Escape(after) + @"\s+([0-9]+(?:\.[0-9]+)?)", RegexOptions.IgnoreCase);
         return m.Success && double.TryParse(m.Groups[1].Value, out var v) ? v : null;
     }
 
-    static double? ReadPercent(string? text)
+    static double? ReadPercent(string? valueText)
     {
-        if (string.IsNullOrWhiteSpace(text) || text.Contains("--")) return null;
-        var m = Regex.Match(text, @"([0-9]+(?:\.[0-9]+)?)\s*%");
+        if (string.IsNullOrWhiteSpace(valueText) || valueText.Contains("--")) return null;
+        var m = Regex.Match(valueText, @"([0-9]+(?:\.[0-9]+)?)\s*%");
         return m.Success && double.TryParse(m.Groups[1].Value, out var v) ? v : null;
     }
 
     static string FmtTemp(double? v) => v.HasValue ? $"{v.Value:0}°" : "--°";
     static string FmtPct(double? v) => v.HasValue ? $"{v.Value:0}%" : "--%";
+
     static string FmtClock(double? mhz)
     {
         if (!mhz.HasValue) return "--";
@@ -350,9 +464,8 @@ internal sealed class TaskbarStatsForm : Form
         {
             const int WS_EX_TOOLWINDOW = 0x00000080;
             const int WS_EX_NOACTIVATE = 0x08000000;
-            const int WS_EX_TRANSPARENT = 0x00000020;
             var cp = base.CreateParams;
-            cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
+            cp.ExStyle |= WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
             return cp;
         }
     }
@@ -365,6 +478,9 @@ internal sealed class TaskbarStatsForm : Form
 
     [DllImport("user32.dll")]
     static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
 
     [StructLayout(LayoutKind.Sequential)]
     struct RECT { public int Left, Top, Right, Bottom; }
