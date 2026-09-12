@@ -99,7 +99,6 @@ internal static class UiEnhancer
         var lblDiskWritten = Get<Label>(main, "lblDiskWritten")!;
         var lblElapsed = Get<Label>(main, "lblElapsed")!;
         var lblStatus = Get<Label>(main, "lblStatus")!;
-        var graph = Get<TempGraph>(main, "graph")!;
         var logBox = Get<ListBox>(main, "logBox")!;
 
         main.SuspendLayout();
@@ -111,12 +110,11 @@ internal static class UiEnhancer
             Padding = new Padding(18, 14, 18, 12),
             BackColor = Color.FromArgb(26, 27, 29),
             ColumnCount = 1,
-            RowCount = 5,
+            RowCount = 4,
             Margin = Padding.Empty
         };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 142));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 250));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
 
@@ -139,12 +137,6 @@ internal static class UiEnhancer
         cards.Controls.Add(BuildCard("STORAGE", lblDisk, new[] { lblDiskRead, lblDiskWrite, lblDiskLoad, lblDiskWritten }), 3, 0);
         root.Controls.Add(cards, 0, 1);
 
-        var graphGroup = MakeSection("TEMPERATURE HISTORY");
-        graph.Dock = DockStyle.Fill;
-        graph.Margin = Padding.Empty;
-        graphGroup.Controls.Add(graph);
-        root.Controls.Add(graphGroup, 0, 2);
-
         var logGroup = MakeSection("TEST LOG");
         logBox.Dock = DockStyle.Fill;
         logBox.Margin = Padding.Empty;
@@ -153,7 +145,7 @@ internal static class UiEnhancer
         logBox.Font = new Font("Consolas", 9.5f);
         logBox.BorderStyle = BorderStyle.None;
         logGroup.Controls.Add(logBox);
-        root.Controls.Add(logGroup, 0, 3);
+        root.Controls.Add(logGroup, 0, 2);
 
         var footer = new TableLayoutPanel
         {
@@ -198,7 +190,7 @@ internal static class UiEnhancer
             try { Process.Start(new ProcessStartInfo(RepoUrl) { UseShellExecute = true }); } catch { }
         };
         footer.Controls.Add(source, 2, 0);
-        root.Controls.Add(footer, 0, 4);
+        root.Controls.Add(footer, 0, 3);
 
         main.Controls.Add(root);
         main.ResumeLayout(true);
