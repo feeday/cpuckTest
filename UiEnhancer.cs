@@ -71,6 +71,7 @@ internal static class UiEnhancer
         var chkRam = Get<CheckBox>(main, "chkRam")!;
         var chkDisk = Get<CheckBox>(main, "chkDisk")!;
         var cmbMinutes = Get<ComboBox>(main, "cmbMinutes")!;
+        var cmbDiskMode = Get<ComboBox>(main, "cmbDiskMode")!;
         var numCpuLimit = Get<NumericUpDown>(main, "numCpuLimit")!;
         var numGpuLimit = Get<NumericUpDown>(main, "numGpuLimit")!;
         var btnStart = Get<Button>(main, "btnStart")!;
@@ -95,6 +96,7 @@ internal static class UiEnhancer
         var lblDiskRead = Get<Label>(main, "lblDiskRead")!;
         var lblDiskWrite = Get<Label>(main, "lblDiskWrite")!;
         var lblDiskLoad = Get<Label>(main, "lblDiskLoad")!;
+        var lblDiskWritten = Get<Label>(main, "lblDiskWritten")!;
         var lblElapsed = Get<Label>(main, "lblElapsed")!;
         var lblStatus = Get<Label>(main, "lblStatus")!;
         var graph = Get<TempGraph>(main, "graph")!;
@@ -118,7 +120,7 @@ internal static class UiEnhancer
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
 
-        root.Controls.Add(BuildToolbar(chkCpu, chkGpu, chkRam, chkDisk, cmbMinutes, numCpuLimit, numGpuLimit,
+        root.Controls.Add(BuildToolbar(chkCpu, chkGpu, chkRam, chkDisk, cmbMinutes, cmbDiskMode, numCpuLimit, numGpuLimit,
             btnStart, btnStop, btnExport, btnLogs, lblElapsed), 0, 0);
 
         var cards = new TableLayoutPanel
@@ -134,7 +136,7 @@ internal static class UiEnhancer
         cards.Controls.Add(BuildCard("CPU", lblCpu, new[] { lblCpuClock, lblCpuPower, lblCpuLoad }), 0, 0);
         cards.Controls.Add(BuildCard("GPU", lblGpu, new[] { lblGpuClock, lblGpuPower, lblGpuLoad }), 1, 0);
         cards.Controls.Add(BuildCard("MEMORY", lblRam, new[] { lblRamClock, lblRamTemp, lblRamRead, lblRamWrite }), 2, 0);
-        cards.Controls.Add(BuildCard("STORAGE", lblDisk, new[] { lblDiskRead, lblDiskWrite, lblDiskLoad }), 3, 0);
+        cards.Controls.Add(BuildCard("STORAGE", lblDisk, new[] { lblDiskRead, lblDiskWrite, lblDiskLoad, lblDiskWritten }), 3, 0);
         root.Controls.Add(cards, 0, 1);
 
         var graphGroup = MakeSection("TEMPERATURE HISTORY");
@@ -204,7 +206,7 @@ internal static class UiEnhancer
 
     static Control BuildToolbar(
         CheckBox chkCpu, CheckBox chkGpu, CheckBox chkRam, CheckBox chkDisk,
-        ComboBox cmbMinutes, NumericUpDown numCpuLimit, NumericUpDown numGpuLimit,
+        ComboBox cmbMinutes, ComboBox cmbDiskMode, NumericUpDown numCpuLimit, NumericUpDown numGpuLimit,
         Button btnStart, Button btnStop, Button btnExport, Button btnLogs, Label lblElapsed)
     {
         var panel = new TableLayoutPanel
@@ -229,17 +231,23 @@ internal static class UiEnhancer
         };
         foreach (var cb in new[] { chkCpu, chkGpu, chkRam, chkDisk })
         {
-            cb.Margin = new Padding(0, 8, 18, 0);
+            cb.Margin = new Padding(0, 8, 16, 0);
             cb.ForeColor = Color.White;
             cb.Font = new Font("Segoe UI Semibold", 9.5f);
             row1.Controls.Add(cb);
         }
 
-        row1.Controls.Add(ToolLabel("Duration", 13));
-        cmbMinutes.Width = 92;
+        row1.Controls.Add(ToolLabel("Duration", 8));
+        cmbMinutes.Width = 86;
         cmbMinutes.Height = 31;
-        cmbMinutes.Margin = new Padding(6, 5, 18, 0);
+        cmbMinutes.Margin = new Padding(6, 5, 12, 0);
         row1.Controls.Add(cmbMinutes);
+
+        row1.Controls.Add(ToolLabel("Disk mode", 0));
+        cmbDiskMode.Width = 122;
+        cmbDiskMode.Height = 31;
+        cmbDiskMode.Margin = new Padding(6, 5, 12, 0);
+        row1.Controls.Add(cmbDiskMode);
 
         StyleButton(btnStart, true);
         StyleButton(btnStop, false);
@@ -253,7 +261,7 @@ internal static class UiEnhancer
         lblElapsed.AutoSize = true;
         lblElapsed.ForeColor = Color.FromArgb(165, 173, 184);
         lblElapsed.Font = new Font("Segoe UI", 9f);
-        lblElapsed.Margin = new Padding(18, 11, 0, 0);
+        lblElapsed.Margin = new Padding(12, 11, 0, 0);
         row1.Controls.Add(lblElapsed);
 
         var row2 = new FlowLayoutPanel
@@ -277,7 +285,7 @@ internal static class UiEnhancer
         row2.Controls.Add(ToolLabel("°C", 0));
         row2.Controls.Add(new Label
         {
-            Text = "SSD write stress: max 8 GB/test · temp file is removed after stop",
+            Text = "SSD: Stress = write-through ≤8 GB · Benchmark = cached peak ≤4 GB · temp file removed after stop",
             AutoSize = true,
             ForeColor = Color.FromArgb(255, 184, 64),
             Font = new Font("Segoe UI", 9f),
