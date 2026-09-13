@@ -1,122 +1,145 @@
 using System.Diagnostics;
-using System.Reflection;
-using System.Runtime.CompilerServices;
+using Microsoft.Win32;
 
 namespace CPUCKTest;
 
-internal static class ExitCleanup
+internal static class DriverCleanup
 {
-    static bool attached;
-    static int shuttingDown;
-    static MainForm? mainForm;
+    static int released;
 
-    [ModuleInitializer]
-    internal static void Initialize()
+    public static void ReleaseDriver()
     {
-        Application.Idle += Attach;
-        Application.ApplicationExit += (_, _) => Shutdown();
+        if (Interlocked.Exchange(ref released, 1) != 0)
+            return;
+
+        StopServicePointingToDriver();
+        TryDeleteDriverFile(12, 50);
     }
 
-    static void Attach(object? sender, EventArgs e)
+    public static void SchedulePostExitDelete()
     {
-        if (attached) return;
-        var main = Application.OpenForms.OfType<MainForm>().FirstOrDefault();
-        if (main == null) return;
-
-        attached = true;
-        mainForm = main;
-        Application.Idle -= Attach;
-
-        // Close the LibreHardwareMonitor Computer before Windows tears down the form.
-        // This releases WinRing0/CPUCKTest.sys instead of leaving the kernel driver open
-        // until the next reboot.
-        main.FormClosing += (_, _) => Shutdown();
-        main.FormClosed += (_, _) => DeleteDriverFileAfterClose();
-    }
-
-    static void Shutdown()
-    {
-        if (Interlocked.Exchange(ref shuttingDown, 1) != 0) return;
+        if (TryDeleteDriverFile(4, 50))
+            return;
 
         try
         {
-            if (mainForm != null)
-            {
-                var timerField = typeof(MainForm).GetField("uiTimer", BindingFlags.Instance | BindingFlags.NonPublic);
-                if (timerField?.GetValue(mainForm) is System.Windows.Forms.Timer timer)
-                    timer.Stop();
-
-                var monitorField = typeof(MainForm).GetField("monitor", BindingFlags.Instance | BindingFlags.NonPublic);
-                if (monitorField?.GetValue(mainForm) is IDisposable monitor)
-                {
-                    monitor.Dispose();
-                    monitorField.SetValue(mainForm, null);
-                }
-            }
-        }
-        catch
-        {
-            // Exit must continue even if a sensor backend fails to close cleanly.
-        }
-
-        // In the normal case Computer.Close() has already unloaded WinRing0 and this
-        // succeeds immediately. Retry briefly because Windows may release the image
-        // section a few milliseconds later.
-        TryDeleteDriverFile(8, 35);
-    }
-
-    static void DeleteDriverFileAfterClose()
-    {
-        if (TryDeleteDriverFile(4, 30)) return;
-
-        // Last-resort cleanup after this process has completely exited. The helper is
-        // hidden and normally lives for less than a second. It prevents CPUCKTest.sys
-        // being left behind/locked if Windows releases the driver image only at process exit.
-        try
-        {
-            string driver = Path.Combine(AppContext.BaseDirectory, "CPUCKTest.sys");
-            if (!File.Exists(driver)) return;
+            string driver = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "CPUCKTest.sys"));
+            if (!File.Exists(driver))
+                return;
 
             string escaped = driver.Replace("'", "''");
             string command =
                 "$p='" + escaped + "';" +
-                "for($i=0;$i -lt 20;$i++){" +
-                "Start-Sleep -Milliseconds 150;" +
+                "$svcs=Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Services' -ErrorAction SilentlyContinue;" +
+                "foreach($s in $svcs){" +
+                "$ip=(Get-ItemProperty -LiteralPath $s.PSPath -Name ImagePath -ErrorAction SilentlyContinue).ImagePath;" +
+                "if($ip){" +
+                "$n=[Environment]::ExpandEnvironmentVariables(($ip -replace '^\\\\\\?\\\\','' -replace '^\\\\\\\\\\?\\\\','').Trim('\"'));" +
+                "try{$n=[IO.Path]::GetFullPath($n)}catch{};" +
+                "if($n -ieq $p){& sc.exe stop $s.PSChildName | Out-Null;Start-Sleep -Milliseconds 120;& sc.exe delete $s.PSChildName | Out-Null}" +
+                "}}" +
+                "for($i=0;$i -lt 30;$i++){" +
+                "Start-Sleep -Milliseconds 100;" +
                 "try{if(Test-Path -LiteralPath $p){Remove-Item -LiteralPath $p -Force -ErrorAction Stop};break}catch{}" +
                 "}";
 
             Process.Start(new ProcessStartInfo
             {
                 FileName = "powershell.exe",
-                Arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -Command \"" + command.Replace("\"", "\\\"") + "\"",
+                Arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -Command \"" +
+                            command.Replace("\"", "\\\"") + "\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden
             });
         }
-        catch
+        catch { }
+    }
+
+    static void StopServicePointingToDriver()
+    {
+        string driver = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "CPUCKTest.sys"));
+
+        try
         {
-            // Best-effort cleanup only. The important part is that the driver handle
-            // has already been released by monitor.Dispose().
+            using var services = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services");
+            if (services == null)
+                return;
+
+            foreach (string serviceName in services.GetSubKeyNames())
+            {
+                try
+                {
+                    using var service = services.OpenSubKey(serviceName);
+                    string? imagePath = service?.GetValue("ImagePath") as string;
+                    if (string.IsNullOrWhiteSpace(imagePath))
+                        continue;
+
+                    string normalized = NormalizeDriverPath(imagePath);
+                    if (!string.Equals(normalized, driver, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    RunSc("stop", serviceName);
+                    Thread.Sleep(80);
+                    RunSc("delete", serviceName);
+                }
+                catch { }
+            }
         }
+        catch { }
+    }
+
+    static string NormalizeDriverPath(string imagePath)
+    {
+        string path = imagePath.Trim().Trim('"');
+
+        if (path.StartsWith(@"\??\", StringComparison.Ordinal))
+            path = path[4..];
+        if (path.StartsWith(@"\\?\", StringComparison.Ordinal))
+            path = path[4..];
+
+        path = Environment.ExpandEnvironmentVariables(path);
+
+        try { return Path.GetFullPath(path); }
+        catch { return path; }
+    }
+
+    static void RunSc(string verb, string serviceName)
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = "sc.exe",
+                Arguments = $"{verb} \"{serviceName}\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+            process?.WaitForExit(1200);
+        }
+        catch { }
     }
 
     static bool TryDeleteDriverFile(int attempts, int delayMs)
     {
         string driver = Path.Combine(AppContext.BaseDirectory, "CPUCKTest.sys");
-        if (!File.Exists(driver)) return true;
+        if (!File.Exists(driver))
+            return true;
 
         for (int i = 0; i < attempts; i++)
         {
             try
             {
+                File.SetAttributes(driver, FileAttributes.Normal);
                 File.Delete(driver);
-                if (!File.Exists(driver)) return true;
+                if (!File.Exists(driver))
+                    return true;
             }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
 
-            if (delayMs > 0) Thread.Sleep(delayMs);
+            if (delayMs > 0)
+                Thread.Sleep(delayMs);
         }
 
         return !File.Exists(driver);
