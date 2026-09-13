@@ -1,5 +1,6 @@
 # CPUCK Test
 
+![webCut 界面](https://raw.githubusercontent.com/feeday/cpuckTest/main/1.png)
 一个 Windows CPU / GPU / RAM / SSD 稳定性与硬件监控工具，目标是做成类似 AIDA64 System Stability Test 的轻量版。
 
 ## 当前功能
