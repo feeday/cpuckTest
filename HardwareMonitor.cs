@@ -172,6 +172,13 @@ internal sealed class HardwareMonitor : IVisitor, IDisposable
             if (isSelectedStorage)
                 diskTemp = SelectPrimaryDiskTemperature(hardware);
 
+            if (isGpu)
+            {
+                double? primaryGpuTemp = SelectPrimaryGpuTemperature(hardware);
+                if (primaryGpuTemp.HasValue)
+                    gpuTemp = Math.Max(gpuTemp ?? double.MinValue, primaryGpuTemp.Value);
+            }
+
             foreach (var sensor in hardware.Sensors)
             {
                 if (!sensor.Value.HasValue)
@@ -209,9 +216,6 @@ internal sealed class HardwareMonitor : IVisitor, IDisposable
 
                 if (isGpu)
                 {
-                    if (sensor.SensorType == SensorType.Temperature)
-                        gpuTemp = Math.Max(gpuTemp ?? 0, value);
-
                     if (sensor.SensorType == SensorType.Power)
                         gpuPower = Math.Max(gpuPower ?? 0, value);
 
@@ -313,6 +317,34 @@ internal sealed class HardwareMonitor : IVisitor, IDisposable
         }
 
         return best ?? list[0];
+    }
+
+    static double? SelectPrimaryGpuTemperature(IHardware gpu)
+    {
+        var temps = gpu.Sensors
+            .Where(s =>
+                s.SensorType == SensorType.Temperature &&
+                s.Value.HasValue &&
+                double.IsFinite(s.Value.Value) &&
+                s.Value.Value > 0 &&
+                s.Value.Value < 120)
+            .ToList();
+
+        if (temps.Count == 0)
+            return null;
+
+        // LibreHardwareMonitor can expose core, hot-spot and memory-junction
+        // temperatures at the same time. The main GPU temperature should be
+        // the core/edge value, not simply the largest sensor value.
+        var primary =
+            temps.FirstOrDefault(s => s.Name.Equals("GPU Core", StringComparison.OrdinalIgnoreCase))
+            ?? temps.FirstOrDefault(s => s.Name.Contains("Core", StringComparison.OrdinalIgnoreCase))
+            ?? temps.FirstOrDefault(s => s.Name.Equals("GPU", StringComparison.OrdinalIgnoreCase))
+            ?? temps.FirstOrDefault(s => s.Name.Equals("Temperature", StringComparison.OrdinalIgnoreCase))
+            ?? temps.FirstOrDefault(s => s.Name.Contains("Edge", StringComparison.OrdinalIgnoreCase))
+            ?? temps[0];
+
+        return primary.Value;
     }
 
     static double? SelectPrimaryDiskTemperature(IHardware drive)
